@@ -53,13 +53,16 @@
 #define PIN_ANALOG_MOISTURE A0
 #define PIN_DC_PUMP 9
 
+/**
+   Max logged pump run entries. After overflow the values are overwritten.
+ */
 #define PUMP_LOG_SIZE 20
 
 /**
    Baud rate for the serial communication.
    Any standard rate can be set.
 */
-const int BAUD_RATE = 38400;
+#define BAUD_RATE 38400
 
 /**
    Max tries to run the pump and water the plant.
@@ -75,6 +78,7 @@ const byte FAULT_THRESHOLD = 3;
 
 /**
    The min value read from the moisture sensor that indicates that the plant is watered.
+   This sensor reports low values for moist soil, and high values for dry soil.
 
    Value range: 0 - 1023
 */
@@ -84,12 +88,12 @@ const int MOISTURE_THRESHOLD = 300;
    Time the system waits between subsequent moisture checks.
    We allow the plant to absorb the watter and stabilize during this time.
 */
-const long COOLDOWN_TIME = 20000; //20s
+const unsigned long COOLDOWN_TIME_SECONDS = 20;
 
 /**
    When the pump runs, it operates in cycles that last a fixed time interval defined with this constant.
 */
-const long PUMP_OP_CYCLE_TIME = 10000; //10s
+const unsigned long PUMP_OP_CYCLE_TIME_SECONDS = 10;
 
 //PWM values (for the DC pump)
 const byte PWM_OFF = 0;
@@ -105,20 +109,23 @@ const byte DC_PUMP_STRENGTH = PWM_25;
 bool pumpRunning;
 bool manualRun;
 unsigned long pumpRunLogs[PUMP_LOG_SIZE]; //in seconds
-byte pumpLogIndex = -1;
+unsigned long lastPumpRunPlusCooldown;
+unsigned long lastPumpRunPlusOpTime;
+int pumpLogIndex;
 int index;
 
+
 //Moisture
-int moistureLastValue = -1;
-int moistureHigh = -1;
-int moistureLow = -1;
-unsigned long moistureValueReadCount = 0; //max times this value can be read and have a valid average calucaltion is 4,199,426
-unsigned long moistureValueReadSum = 0; //the sum of all moisture readings used to calculate an average
+int moistureLastValue;
+int moistureHigh;
+int moistureLow;
+unsigned long moistureValueReadCount; //max times this value can be read and have a valid average calucaltion is 4,199,426
+unsigned long moistureValueReadSum; //the sum of all moisture readings used to calculate an average
 
 //Util
 unsigned long ellapsedTimeSeconds;
 byte faultCount;
-String serialMessageIn = "";
+String serialMessageIn;
 
 
 SoftwareSerial softSerial(PIN_RX_SOFT, PIN_TX_SOFT);
@@ -127,10 +134,12 @@ void setup() {
   pinMode(PIN_ERROR, OUTPUT);
   pinMode(LED_BUILTIN, OUTPUT);
 
-  digitalWrite(PIN_ERROR, LOW);
-
   faultCount = 0;
-  moistureLastValue - 1;
+  pumpLogIndex = -1;
+  moistureLastValue = -1;
+  moistureHigh = -1;
+  moistureLow = -1;
+  serialMessageIn = "";
   for (index = 0; index < PUMP_LOG_SIZE; index++) {
     pumpRunLogs[index] = -1;
   }
@@ -153,6 +162,7 @@ void loop() {
   }
   if (Serial.available()) {
     serialMessageIn = Serial.readStringUntil('\n');
+    Serial.println(serialMessageIn);
     softSerial.println(serialMessageIn);
   }
   if (serialMessageIn != "") {
@@ -162,7 +172,7 @@ void loop() {
 
   //Read, log, and print moisture value
   moistureLastValue = analogRead(PIN_ANALOG_MOISTURE);
-  printValue("moisture = ", moistureLastValue);
+  // printValue("moisture = ", moistureLastValue);
   moistureValueReadSum += moistureLastValue;
   moistureValueReadCount++;
   if (moistureLow == -1 || moistureHigh == -1) {
@@ -176,21 +186,24 @@ void loop() {
 
   //Check if program is in ERROR_MODE
   if (faultCount >= FAULT_THRESHOLD) {
+    if (pumpRunning) {
+      runPumpWithLog(PWM_OFF);
+      printValue("ERROR MODE - Turning pump off", -1);
+    }
     digitalWrite(PIN_ERROR, HIGH);
     delay(1000);
     digitalWrite(PIN_ERROR, LOW);
     delay(1000);
-    if (pumpRunning) {
-      runPumpWithLog(PWM_OFF);
-      printValue("Turning pump off at moisture value: ", moistureLastValue);
-    }
     return;
   }
 
   //Check if pump needs to be turned off
-  if (pumpRunning && pumpRunLogs[pumpLogIndex] >= PUMP_OP_CYCLE_TIME) {
-    runPumpWithLog(PWM_OFF);
-    printValue("Turning pump off at moisture value: ", moistureLastValue);
+  if (pumpRunning) {
+    lastPumpRunPlusOpTime = pumpRunLogs[pumpLogIndex] + PUMP_OP_CYCLE_TIME_SECONDS;
+    if(ellapsedTimeSeconds >= lastPumpRunPlusOpTime) {
+      runPumpWithLog(PWM_OFF);
+      printValue("Turning pump off at moisture value: ", moistureLastValue);
+    }
   }
 
   //Check if manual run was requested
@@ -200,8 +213,13 @@ void loop() {
   }
 
   //React to moisture sensor value (run or stop pump)
-  if (moistureLastValue != -1 && moistureLastValue < MOISTURE_THRESHOLD) {
-    if (!pumpRunning && pumpRunLogs[pumpLogIndex] >= COOLDOWN_TIME) {
+  if (pumpLogIndex != -1) {
+    lastPumpRunPlusCooldown = pumpRunLogs[pumpLogIndex] + COOLDOWN_TIME_SECONDS;
+  } else {
+    lastPumpRunPlusCooldown = COOLDOWN_TIME_SECONDS;
+  }
+  if (moistureLastValue != -1 && moistureLastValue > MOISTURE_THRESHOLD) {
+    if (!pumpRunning && ellapsedTimeSeconds >= lastPumpRunPlusCooldown) {
       faultCount++;
       runPumpWithLog(DC_PUMP_STRENGTH);
     }
@@ -213,7 +231,7 @@ void loop() {
     }
   }
 
-  delay(2000); //Delay for stability (min 1s)
+  delay(1000); //Delay for stability (min 1s)
 }
 
 /**
@@ -248,7 +266,12 @@ void runPumpWithLog(byte strength) {
    The message is concatenations of params keyAndOperator and value.
 */
 void printValue(String keyAndOperator, long value) {
-  String message = keyAndOperator + value;
+  String message;
+  if (value != -1) {
+    message = keyAndOperator + value;
+  } else {
+    message = keyAndOperator;
+  }
   Serial.println(message);
   softSerial.println(message);
 }
@@ -273,11 +296,12 @@ void handleInputCommand(String command) {
           commaSeparatedLogs += ",";
         }
       }
-      printValue(commaSeparatedLogs, 0);
+      printValue(commaSeparatedLogs, -1);
     } else {
-      printValue("No wattering logs.", 1);
+      printValue("No wattering logs", -1);
     }
   } else if (command == "info_moisture") {
+    printValue("Moisture current: ", moistureLastValue);
     printValue("Moisture high: ", moistureHigh);
     printValue("Moisture low: ", moistureLow);
     if (moistureValueReadCount > 0) {
