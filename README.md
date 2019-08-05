@@ -1,6 +1,8 @@
 # FlowerIO
 A self watering flower pot. Made with Arduino.
 
+> _[Note: DEVELOPMENT IN PROGRESS]_
+
 ## Circuit
 
 ![Alt text][fritzing_circuit]
