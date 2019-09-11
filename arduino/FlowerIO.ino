@@ -225,7 +225,7 @@ void loop() {
     }
   } else {
     faultCount = 0;
-    if (pumpRunning && moistureLastValue > MOISTURE_THRESHOLD + 200) {
+    if (pumpRunning && moistureLastValue < MOISTURE_THRESHOLD - 200) {
       runPumpWithLog(PWM_OFF);
       printValue("Turning pump off - max moisture reached before pump cycle at ellapsed time (s)", ellapsedTimeSeconds);
     }
