@@ -16,7 +16,7 @@
       "info_moisture"   - Sends the MIN, MAX, and AVG readings from the moisture sensor;
       "manual_run"      - Initiates a manual start of the pump as if triggered from the sensor;
       "reset"           - Resets the fault count and manual run flags;
-      "stop"            - Stops the pump and enteres error mode;
+      "stop"            - Stops the pump and enters error mode;
 
    The circuit:
     - RX is digital pin 10 (connect to TX of other device)
@@ -88,7 +88,7 @@ const int MOISTURE_THRESHOLD = 300;
    Time the system waits between subsequent moisture checks.
    We allow the plant to absorb the watter and stabilize during this time.
 */
-const unsigned long COOLDOWN_TIME_SECONDS = 20;
+const unsigned long COOLDOWN_TIME_SECONDS = 30;
 
 /**
    When the pump runs, it operates in cycles that last a fixed time interval defined with this constant.
@@ -183,9 +183,20 @@ void loop() {
   } else if (moistureLastValue < moistureLow) {
     moistureLow = moistureLastValue;
   }
+  
+  //Calc pump runnable state
+  if (pumpLogIndex != -1) {
+    lastPumpRunPlusCooldown = pumpRunLogs[pumpLogIndex] + PUMP_OP_CYCLE_TIME_SECONDS + COOLDOWN_TIME_SECONDS;
+  } else {
+    lastPumpRunPlusCooldown = COOLDOWN_TIME_SECONDS;
+  }
 
   //Check if program is in ERROR_MODE
-  if (faultCount >= FAULT_THRESHOLD) {
+  if (faultCount >= FAULT_THRESHOLD && ellapsedTimeSeconds >= lastPumpRunPlusCooldown) {
+    if (faultCount == FAULT_THRESHOLD) {
+      printValue("ERROR MODE - At moisture: ", moistureLastValue);
+      faultCount++;
+    }
     if (pumpRunning) {
       runPumpWithLog(PWM_OFF);
       printValue("ERROR MODE - Turning pump off", -1);
@@ -200,7 +211,7 @@ void loop() {
   //Check if pump needs to be turned off
   if (pumpRunning) {
     lastPumpRunPlusOpTime = pumpRunLogs[pumpLogIndex] + PUMP_OP_CYCLE_TIME_SECONDS;
-    if(ellapsedTimeSeconds >= lastPumpRunPlusOpTime) {
+    if (ellapsedTimeSeconds >= lastPumpRunPlusOpTime) {
       runPumpWithLog(PWM_OFF);
       printValue("Turning pump off at moisture value: ", moistureLastValue);
     }
@@ -213,11 +224,6 @@ void loop() {
   }
 
   //React to moisture sensor value (run or stop pump)
-  if (pumpLogIndex != -1) {
-    lastPumpRunPlusCooldown = pumpRunLogs[pumpLogIndex] + COOLDOWN_TIME_SECONDS;
-  } else {
-    lastPumpRunPlusCooldown = COOLDOWN_TIME_SECONDS;
-  }
   if (moistureLastValue != -1 && moistureLastValue > MOISTURE_THRESHOLD) {
     if (!pumpRunning && ellapsedTimeSeconds >= lastPumpRunPlusCooldown) {
       faultCount++;
